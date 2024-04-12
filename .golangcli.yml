@@ -1,0 +1,70 @@
+linters-settings:
+  govet:
+    check-shadowing: true
+  golint:
+    min-confidence: 0.8
+  gocyclo:
+    min-complexity: 10
+  maligned:
+    suggest-new: true
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+
+linters:
+  enable:
+    - govet
+    - golint
+    - gocyclo
+    - maligned
+    - deadcode
+    - gofmt
+    - goimports
+    - errcheck
+    - staticcheck
+    - unused
+    - goconst
+    - gosimple
+    - structcheck
+    - varcheck
+    - ineffassign
+    - typecheck
+    - unparam
+    - nakedret
+    - prealloc
+    - scopelint
+    - gocritic
+    - gochecknoinits
+    - gochecknoglobals
+    - gomnd
+    - misspell
+    - lll
+    - unconvert
+    - gosec
+    - gofumpt
+    - wsl
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    - linters:
+        - golint
+      text: "exported \\w+ should have comment or be unexported"
+
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new-from-rev: HEAD~
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  build-tags:
+    - myTag
+  skip-dirs:
+    - vendor
+    - tests
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true

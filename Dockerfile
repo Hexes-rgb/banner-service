@@ -2,7 +2,9 @@ FROM golang:1.22-alpine
 
 WORKDIR /app
 
-COPY src/ ./
+COPY cmd/banner-service/ ./
+
+COPY go.mod ./
 
 RUN go mod download
 
