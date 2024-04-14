@@ -14,4 +14,4 @@ stop:
 delete:
 	@echo "Deleting services..."
 	docker compose down
-	docker volume rm banner_service_pgdata
+	docker volume ls -q | grep pgdata | xargs -r docker volume rm
