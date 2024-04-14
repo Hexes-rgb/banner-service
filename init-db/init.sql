@@ -70,14 +70,16 @@ DO $$
 DECLARE
     total_features INT;
     random_feature_id INT;
+    random_title TEXT;
 BEGIN
     SELECT COUNT(*) INTO total_features FROM public.features;
 
     FOR i IN 1..3000 LOOP
         random_feature_id := trunc(random() * (total_features - 1)) + 1;
+        random_title := 'title' || md5(random()::text); -- Сгенерируем случайный текст
 
         INSERT INTO public.banners (feature_id, content, is_active)
-        VALUES (random_feature_id, '{}'::jsonb, true);
+        VALUES (random_feature_id, jsonb_build_object('title', random_title), true);
     END LOOP;
 END $$;
 

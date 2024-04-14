@@ -1,4 +1,4 @@
-package banner
+package bannerrepo
 
 import (
 	"context"
@@ -30,19 +30,20 @@ func (r *PostgresBannerRepository) GetBanner(ctx context.Context, featureID, tag
 	}
 
 	query := fmt.Sprintf(`
-	SELECT b.banner_id, b.feature_id, b.content, b.is_active, b.created_at, b.updated_at
-	FROM banners b
-	INNER JOIN banner_tags bt ON b.banner_id = bt.banner_id
-	%s
-	LIMIT 1
-	`, whereConditions)
+    SELECT b.banner_id, b.feature_id, b.content, b.is_active, b.created_at, b.updated_at
+    FROM banners b
+    INNER JOIN banner_tag bt ON b.banner_id = bt.banner_id
+    %s
+    GROUP BY b.banner_id, b.feature_id, b.content, b.is_active, b.created_at, b.updated_at
+    LIMIT 1
+    `, whereConditions)
 
 	banner := &models.Banner{}
-	contentJSON := ""
+
 	if err := r.pool.QueryRow(ctx, query, featureID, tagID).Scan(
 		&banner.BannerID,
 		&banner.FeatureID,
-		&contentJSON,
+		&banner.Content,
 		&banner.IsActive,
 		&banner.CreatedAt,
 		&banner.UpdatedAt,
@@ -50,9 +51,29 @@ func (r *PostgresBannerRepository) GetBanner(ctx context.Context, featureID, tag
 		return nil, err
 	}
 
-	if err := json.Unmarshal([]byte(contentJSON), &banner.Content); err != nil {
+	tagQuery := `
+	SELECT tag_id
+	FROM banner_tag
+	WHERE banner_id = $1
+	`
+	tagRows, err := r.pool.Query(ctx, tagQuery, banner.BannerID)
+	if err != nil {
 		return nil, err
 	}
+	var tagIDs []int
+	for tagRows.Next() {
+		var tagID int
+		if err := tagRows.Scan(&tagID); err != nil {
+			return nil, err
+		}
+		tagIDs = append(tagIDs, tagID)
+	}
+	if err := tagRows.Err(); err != nil {
+		return nil, err
+	}
+	tagRows.Close()
+
+	banner.TagIDs = tagIDs
 
 	return banner, nil
 }
@@ -64,13 +85,18 @@ func (r *PostgresBannerRepository) GetBanners(ctx context.Context, featureID, ta
 	FROM banners b
 	`
 
-	whereConditions := []string{}
-	if featureID != 0 {
-		whereConditions = append(whereConditions, "b.feature_id = $1")
+	whereConditions := []string{"1=1"}
+	if featureID > 0 {
+		whereConditions = append(whereConditions, fmt.Sprintf("b.feature_id = $%d", len(queryParams)+1))
 		queryParams = append(queryParams, featureID)
 	}
-	if tagID != 0 {
-		whereConditions = append(whereConditions, "bt.tag_id = $2")
+	if tagID > 0 {
+		baseQuery = `
+		SELECT b.banner_id, b.feature_id, b.content, b.is_active, b.created_at, b.updated_at
+		FROM banners b
+		LEFT JOIN banner_tag bt ON b.banner_id = bt.banner_id
+		`
+		whereConditions = append(whereConditions, fmt.Sprintf("bt.tag_id = $%d", len(queryParams)+1))
 		queryParams = append(queryParams, tagID)
 	}
 
@@ -78,8 +104,16 @@ func (r *PostgresBannerRepository) GetBanners(ctx context.Context, featureID, ta
 		baseQuery += "WHERE " + strings.Join(whereConditions, " AND ")
 	}
 
-	query := fmt.Sprintf("%s ORDER BY b.updated_at DESC LIMIT $%d OFFSET $%d", baseQuery, len(queryParams)+1, len(queryParams)+2)
-	queryParams = append(queryParams, limit, offset)
+	baseQuery += `
+	GROUP BY b.banner_id, b.feature_id, b.content, b.is_active, b.created_at, b.updated_at
+	`
+	var query string
+	if limit > 0 && offset >= 0 {
+		query = fmt.Sprintf("%s ORDER BY b.updated_at DESC LIMIT $%d OFFSET $%d", baseQuery, len(queryParams)+1, len(queryParams)+2)
+		queryParams = append(queryParams, limit, offset)
+	} else {
+		query = fmt.Sprintf("%s ORDER BY b.updated_at DESC", baseQuery)
+	}
 
 	rows, err := r.pool.Query(ctx, query, queryParams...)
 	if err != nil {
@@ -90,11 +124,10 @@ func (r *PostgresBannerRepository) GetBanners(ctx context.Context, featureID, ta
 	banners := make([]*models.Banner, 0)
 	for rows.Next() {
 		banner := &models.Banner{}
-		contentJSON := ""
 		if err := rows.Scan(
 			&banner.BannerID,
 			&banner.FeatureID,
-			&contentJSON,
+			&banner.Content,
 			&banner.IsActive,
 			&banner.CreatedAt,
 			&banner.UpdatedAt,
@@ -102,15 +135,30 @@ func (r *PostgresBannerRepository) GetBanners(ctx context.Context, featureID, ta
 			return nil, err
 		}
 
-		if err := json.Unmarshal([]byte(contentJSON), &banner.Content); err != nil {
+		tagQuery := `
+		SELECT tag_id
+		FROM banner_tag
+		WHERE banner_id = $1
+		`
+		tagRows, err := r.pool.Query(ctx, tagQuery, banner.BannerID)
+		if err != nil {
 			return nil, err
 		}
+		var tagIDs []int
+		for tagRows.Next() {
+			var tagID int
+			if err := tagRows.Scan(&tagID); err != nil {
+				return nil, err
+			}
+			tagIDs = append(tagIDs, tagID)
+		}
+		if err := tagRows.Err(); err != nil {
+			return nil, err
+		}
+		tagRows.Close()
 
+		banner.TagIDs = tagIDs
 		banners = append(banners, banner)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return banners, nil
@@ -140,7 +188,7 @@ func (r *PostgresBannerRepository) CreateBanner(ctx context.Context, banner *mod
 	}
 
 	for _, tagID := range banner.TagIDs {
-		_, err = tx.Exec(ctx, "INSERT INTO banner_tags (banner_id, tag_id) VALUES ($1, $2)", bannerID, tagID)
+		_, err = tx.Exec(ctx, "INSERT INTO banner_tag (banner_id, tag_id) VALUES ($1, $2)", bannerID, tagID)
 		if err != nil {
 			return 0, err
 		}
@@ -163,7 +211,12 @@ func (r *PostgresBannerRepository) UpdateBanner(ctx context.Context, bannerID in
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+
+	defer func() {
+		if err != nil {
+			tx.Rollback(ctx)
+		}
+	}()
 
 	query := `
 	UPDATE banners
@@ -177,19 +230,16 @@ func (r *PostgresBannerRepository) UpdateBanner(ctx context.Context, bannerID in
 		return errors.New("no rows affected")
 	}
 
-	_, err = tx.Exec(ctx, "DELETE FROM banner_tags WHERE banner_id = $1", bannerID)
-	if err != nil {
+	if _, err = tx.Exec(ctx, "DELETE FROM banner_tag WHERE banner_id = $1", bannerID); err != nil {
 		return err
 	}
 
 	for _, tagID := range banner.TagIDs {
-		_, err = tx.Exec(ctx, "INSERT INTO banner_tags (banner_id, tag_id) VALUES ($1, $2)", bannerID, tagID)
-		if err != nil {
+		if _, err = tx.Exec(ctx, "INSERT INTO banner_tag (banner_id, tag_id) VALUES ($1, $2)", bannerID, tagID); err != nil {
 			return err
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
+	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
 
@@ -197,6 +247,7 @@ func (r *PostgresBannerRepository) UpdateBanner(ctx context.Context, bannerID in
 }
 
 func (r *PostgresBannerRepository) DeleteBanner(ctx context.Context, bannerID int) error {
+	var ErrNoRowsAffected = errors.New("no rows affected")
 	query := `
 	DELETE FROM banners
 	WHERE banner_id = $1
@@ -205,7 +256,7 @@ func (r *PostgresBannerRepository) DeleteBanner(ctx context.Context, bannerID in
 	if cmdTag, err := r.pool.Exec(ctx, query, bannerID); err != nil {
 		return err
 	} else if cmdTag.RowsAffected() != 1 {
-		return errors.New("no rows affected")
+		return ErrNoRowsAffected
 	}
 
 	return nil
