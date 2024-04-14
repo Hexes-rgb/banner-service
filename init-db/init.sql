@@ -1,10 +1,6 @@
-CREATE TABLE public.banners (
-    banner_id SERIAL PRIMARY KEY,
-    feature_id INTEGER NOT NULL,
-    content JSONB NOT NULL,
-    is_active BOOLEAN NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE public.features (
+    feature_id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE public.tags (
@@ -12,12 +8,14 @@ CREATE TABLE public.tags (
     name VARCHAR(255) NOT NULL
 );
 
-CREATE TABLE public.banner_tags (
-    banner_id INTEGER NOT NULL,
-    tag_id INTEGER NOT NULL,
-    PRIMARY KEY (banner_id, tag_id),
-    FOREIGN KEY (banner_id) REFERENCES banners(banner_id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+CREATE TABLE public.banners (
+    banner_id SERIAL PRIMARY KEY,
+    feature_id INTEGER NOT NULl,
+    content JSONB NOT NULL,
+    is_active BOOLEAN NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (feature_id) REFERENCES public.features(feature_id) ON DELETE CASCADE
 );
 
 CREATE TABLE public.users (
@@ -26,50 +24,91 @@ CREATE TABLE public.users (
     is_admin BOOLEAN NOT NULL DEFAULT false
 );
 
-CREATE TABLE public.features (
-    feature_id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL
+CREATE TABLE public.banner_tag (
+    banner_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
+    FOREIGN KEY (banner_id) REFERENCES public.banners(banner_id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES public.tags(tag_id) ON DELETE CASCADE,
+    PRIMARY KEY (banner_id, tag_id)
 );
 
-INSERT INTO public.tags (name)
-SELECT 'Tag ' || generate_series FROM generate_series(1, 400);
+CREATE OR REPLACE FUNCTION check_unique_feature_tag_combination()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_banner_feature_id INTEGER;
+BEGIN
+    SELECT feature_id INTO v_banner_feature_id FROM banners WHERE banner_id = NEW.banner_id;
+
+    IF (SELECT COUNT(*) FROM banner_tag
+        JOIN banners ON banners.banner_id = banner_tag.banner_id
+        WHERE banners.feature_id = v_banner_feature_id
+        AND banner_tag.tag_id = NEW.tag_id
+        AND banner_tag.banner_id <> NEW.banner_id) > 0 THEN
+        RAISE EXCEPTION 'Not a unique combination of tag_id and feature_id';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_unique_feature_tag_combination
+BEFORE INSERT OR UPDATE ON banner_tag
+FOR EACH ROW EXECUTE FUNCTION check_unique_feature_tag_combination();
 
 INSERT INTO public.features (name)
-SELECT 'Feature ' || generate_series FROM generate_series(1, 400);
+SELECT 'Feature ' || i
+FROM generate_series(1, 500) AS i;
 
-INSERT INTO public.users (is_admin)
-SELECT false FROM generate_series(1, 20)
-UNION ALL
-SELECT true FROM generate_series(1, 5);
+INSERT INTO public.tags (name)
+SELECT 'Tag ' || i
+FROM generate_series(1, 800) AS i;
 
-INSERT INTO public.banners (feature_id, content, is_active)
-SELECT
-    (random() * (SELECT max(feature_id) FROM public.features))::int + 1,
-    jsonb_build_object('title', 'Banner ' || generate_series, 'description', md5(random()::text)),
-    (random() > 0.5)
-FROM generate_series(1, 1000);
+INSERT INTO public.users (token, is_admin)
+SELECT '', i <= 3
+FROM generate_series(1, 10) AS i;
 
 DO $$
 DECLARE
-    banner_id int;
-    tag_id_max int;
-    attempts int;
+    total_features INT;
+    random_feature_id INT;
 BEGIN
-    SELECT max(tag_id) INTO tag_id_max FROM public.tags;
-    
-    FOR banner_id IN 1..1000 LOOP
-        attempts := (random() * 4 + 1)::int;
-        WHILE attempts > 0 LOOP
+    SELECT COUNT(*) INTO total_features FROM public.features;
+
+    FOR i IN 1..3000 LOOP
+        random_feature_id := trunc(random() * (total_features - 1)) + 1;
+
+        INSERT INTO public.banners (feature_id, content, is_active)
+        VALUES (random_feature_id, '{}'::jsonb, true);
+    END LOOP;
+END $$;
+
+
+DO $$
+DECLARE
+    v_banner_id INTEGER;
+    v_tag_id INTEGER;
+    v_count_tags INTEGER;
+    v_total_tags INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_total_tags FROM public.tags;
+
+    FOR v_banner_id IN SELECT banner_id FROM public.banners LOOP
+        v_count_tags := trunc(random() * 7) + 1;
+
+        WHILE v_count_tags > 0 LOOP
+            v_tag_id := trunc(random() * (v_total_tags-1)) + 1;
             BEGIN
-                INSERT INTO public.banner_tags (banner_id, tag_id)
-                VALUES (banner_id, (random() * (tag_id_max - 1) + 1)::int)
-                ON CONFLICT DO NOTHING;
-                
-                attempts := attempts - 1;
-            EXCEPTION WHEN unique_violation THEN
-                NULL;
+                INSERT INTO public.banner_tag (banner_id, tag_id) VALUES (v_banner_id, v_tag_id);
+                v_count_tags := v_count_tags - 1;
+            EXCEPTION WHEN OTHERS THEN
+                IF SQLSTATE = '45000' THEN
+                    CONTINUE;
+                ELSE
+                    RAISE NOTICE 'Error: %', SQLERRM;
+                END IF;
             END;
         END LOOP;
     END LOOP;
 END $$;
+
+
 
